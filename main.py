@@ -1,12 +1,19 @@
+# main.py
 import asyncio
 from api_football import get_live_fixtures, is_top5_league, parse_events
 from bot import send_message
 from keep_alive import keep_alive
+from config import CHAT_ID
 
 keep_alive()
 
+# Ensure CHAT_ID is set and convert to int
+if CHAT_ID is None:
+    raise ValueError("CHAT_ID is not set in .env")
+MAIN_CHAT_ID = int(CHAT_ID)
+
 async def main_loop():
-    print("Bot started — tracking live matches in Top-5 leagues")
+    print("Bot started — tracking live matches in Top-5 leagues and additional leagues")
 
     while True:
         try:
@@ -40,7 +47,8 @@ async def main_loop():
                     continue
 
                 for message in messages:
-                    await send_message(message)
+                    # Always pass MAIN_CHAT_ID as int
+                    await send_message(chat_id=MAIN_CHAT_ID, text=message)
 
         except Exception as e:
             print(f"[MAIN LOOP ERROR] {e}")
