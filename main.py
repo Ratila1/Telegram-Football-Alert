@@ -3,13 +3,13 @@
 import asyncio
 import json
 import os
-from typing import Set, List # Добавлен List
+from typing import Set, List 
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
+# NOTE: parse_events теперь принимает 2 аргумента: parse_events(fixture, is_tracked_match)
 from api_football import get_live_fixtures, is_top5_league, parse_events
-# CHAT_ID УБРАН, так как теперь используется список подписок
 from config import TOKEN, CHECK_INTERVAL 
 
 # ====================== TRACKED MATCHES STORAGE (Улучшено) ======================
@@ -98,8 +98,8 @@ async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text("Fetching list of all currently tracked live matches, please wait...")
 
     try:
-        # 1. Fetch all currently live fixtures
-        fixtures = get_live_fixtures()
+        # 1. Fetch all currently live fixtures - ИСПРАВЛЕНО: передаем manual_tracked
+        fixtures = get_live_fixtures(manual_tracked) 
         
         if not fixtures:
             await message.reply_text("No live matches found at the moment.")
@@ -144,9 +144,12 @@ async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     except Exception as e:
         print(f"[ALLGAMES ERROR] {e}")
-        await message.reply_text("An error occurred while fetching live matches.")
+        # Если get_live_fixtures падает из-за лимита API, это будет видно здесь
+        await message.reply_text("An error occurred while fetching live matches. Check bot logs.")
 
 # ====================== TELEGRAM COMMANDS ======================
+# ... (start, track, untrack, mygames - код без изменений)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_message or not update.effective_chat:
         return
@@ -261,11 +264,10 @@ async def send_alert(text: str, app: Application):
         save_subscribers(subscribed_chats)
 
 
-# ====================== MAIN LOOP (Использует новую логику) ======================
+# ====================== MAIN LOOP (ИСПРАВЛЕНО: Передаем аргументы) ======================
 async def main_loop(app: Application):
     print("\n[BOT] Starting main tracking loop...")
     print(f"[BOT] Initial state: {len(manual_tracked)} manually tracked matches.")
-    # Добавлено логирование текущего интервала для удобства
     print(f"[BOT] Check interval set to {CHECK_INTERVAL} seconds.") 
     print(f"[BOT] Active subscriptions: {len(subscribed_chats)} chats.")
     
@@ -276,7 +278,8 @@ async def main_loop(app: Application):
         print(f"\n--- Tracking Cycle #{cycle_count} ({len(manual_tracked)} manual, {len(subscribed_chats)} subs) ---")
         
         try:
-            fixtures = get_live_fixtures()
+            # ИСПРАВЛЕНИЕ #1: Передаем обязательный аргумент manual_tracked
+            fixtures = get_live_fixtures(manual_tracked) 
             
             if not fixtures:
                 print("[LOOP] No live fixtures found. Waiting...")
@@ -290,11 +293,13 @@ async def main_loop(app: Application):
                 is_top5 = is_top5_league(fixture)
                 is_manual = fid in manual_tracked
                 
+                # Флаг для parse_events и логики статистики
+                is_tracked_match = is_top5 or is_manual 
+                
                 home = fixture["teams"]["home"]["name"]
                 away = fixture["teams"]["away"]["name"]
                 
-                if not (is_top5 or is_manual):
-                    # Логирование пропущенного матча
+                if not is_tracked_match:
                     print(f"[SKIP] Fixture #{fid} ({home} vs {away}) - Not in auto-track list and not manually tracked.")
                     continue
                 
@@ -309,17 +314,19 @@ async def main_loop(app: Application):
                     
                 print(f"[TRACK] Analyzing Fixture #{fid} ({home} vs {away}) - Reason: {track_type}")
 
-                messages = parse_events(fixture)
+                # ИСПРАВЛЕНИЕ #2: Передаем обязательный аргумент is_tracked_match
+                messages = parse_events(fixture, is_tracked_match) 
                 
                 if messages:
                     print(f"[TRACK] Found {len(messages)} new alert(s) for #{fid}")
                 
                 for msg in messages:
-                    await send_alert(msg, app) # ИСПОЛЬЗУЕМ НОВУЮ send_alert
+                    await send_alert(msg, app) 
 
             print(f"[LOOP] Analysis complete. {matches_to_analyze} matches processed.")
             
         except Exception as e:
+            # Эта ошибка должна исчезнуть после исправлений выше
             print(f"[LOOP ERROR] An unexpected error occurred in the main loop: {e}")
             
         await asyncio.sleep(CHECK_INTERVAL)
@@ -348,6 +355,7 @@ async def main():
 
 if __name__ == "__main__":
     try:
+        # Предполагается, что keep_alive используется для хостинга
         import keep_alive
         keep_alive.keep_alive()
     except ImportError:
