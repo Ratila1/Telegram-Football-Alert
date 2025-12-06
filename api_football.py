@@ -64,7 +64,12 @@ def is_top5_league(fixture: dict) -> bool:
 
 
 def parse_events(fixture: dict) -> list[str]:
-    """Parse match events and statistics, return formatted messages."""
+    """
+    Parse match events and statistics, return formatted messages.
+    
+    Includes a score discrepancy check to ensure goals are not missed 
+    if the API updates the score but omits the 'Goal' event.
+    """
     messages: list[str] = []
     fid = fixture["fixture"]["id"]
 
@@ -73,8 +78,11 @@ def parse_events(fixture: dict) -> list[str]:
 
     gh = fixture["goals"]["home"] or 0
     ga = fixture["goals"]["away"] or 0
+    
+    # 1. Получаем старый счет из кэша для проверки разницы
+    old_gh, old_ga = last_scores.get(fid, (0, 0)) 
+    
     score = f"{gh} : {ga}"
-
     league = fixture["league"]["name"]
     league_id = fixture["league"]["id"]
 
@@ -87,12 +95,44 @@ def parse_events(fixture: dict) -> list[str]:
 
     header = f"<b>{flag} {league}</b>\n{round_info}\n\n<b>{home} {score} {away}</b>"
 
-    # Update score cache
+    # Обновляем кэш счета (должно быть до return, но после получения old_gh/old_ga)
     last_scores[fid] = (gh, ga)
     
     print(f"[PARSE] Analyzing Fixture #{fid}: {home} {gh}-{ga} {away} ({league})")
 
-    # ===== EVENTS =====
+    # ====================== SCORE DISCREPANCY CHECK (Проверка счета) ======================
+    
+    # Флаг для определения, есть ли событие Goal в текущем API-ответе
+    is_goal_in_events_list = any(ev["type"] == "Goal" for ev in fixture.get("events", []))
+    
+    # Проверяем: 1. Счет изменился? И 2. API не прислал событие Goal в events?
+    if (gh != old_gh or ga != old_ga) and not is_goal_in_events_list:
+        
+        # Определяем забившую команду
+        scorer_team = ""
+        if gh > old_gh and ga == old_ga:
+            scorer_team = home
+        elif ga > old_ga and gh == old_gh:
+            scorer_team = away
+        
+        # Генерируем "синтетический" гол, если счет изменился и мы знаем, кто забил
+        if scorer_team:
+            time_elapsed = fixture["fixture"]["status"].get("elapsed", "??")
+            
+            # Создаем уникальный ключ для синтетического события
+            synthetic_key = hashlib.md5(f"{fid}_{time_elapsed}_GOAL_SYNTHETIC_{gh}{ga}".encode()).hexdigest()
+            
+            if synthetic_key not in sent_events:
+                sent_events.add(synthetic_key)
+                
+                msg = (
+                    f"⚽️ GOAL (Score Update via API)!\n"
+                    f"Team: {scorer_team} leads to {gh}-{ga}\nMinute: {time_elapsed}'"
+                )
+                print(f"[EVENT-FIX] Synthetic Goal event created for #{fid}: {scorer_team} ({gh}-{ga})")
+                messages.append(f"{header}\n\n{msg}\n──────────────────")
+
+    # ====================== EVENTS PROCESSING (Обработка событий) ======================
     for ev in fixture.get("events", []):
         key = hashlib.md5(
             f"{fid}_{ev['time']['elapsed']}_{ev['type']}_{ev['detail']}_{ev['team']['id']}".encode()
@@ -102,7 +142,6 @@ def parse_events(fixture: dict) -> list[str]:
             continue
         sent_events.add(key)
         
-        # Log the detected event
         print(f"[EVENT] New event found for #{fid}: Type='{ev['type']}', Detail='{ev['detail']}', Min='{ev['time']['elapsed']}'")
 
         minute = ev["time"]["elapsed"]
@@ -139,14 +178,13 @@ def parse_events(fixture: dict) -> list[str]:
         if msg:
             messages.append(f"{header}\n\n{msg}\n──────────────────")
 
-    # ===== STATISTICS =====
+    # ====================== STATISTICS (Статистика) ======================
     stats = fixture.get("statistics")
     if stats and len(stats) == 2:
 
         def get_value(stat_list: list, name: str) -> int:
             for s in stat_list:
                 if s["type"] == name:
-                    # Replace None/"" with 0 and ensure integer type
                     return int(s["value"].strip().replace('%', '') or 0)
             return 0
 
@@ -157,13 +195,11 @@ def parse_events(fixture: dict) -> list[str]:
         oa = get_value(stats[1]["statistics"], "Offsides")
 
         if last_corners.get(fid) != (ch, ca):
-            # Log the change in statistics
             print(f"[STATS] Corner update for #{fid}: {ch}-{ca}")
             last_corners[fid] = (ch, ca)
             messages.append(f"{header}\n\n📐 Corner Kicks: {ch}–{ca}\n──────────────────")
 
         if last_offsides.get(fid) != (oh, oa):
-            # Log the change in statistics
             print(f"[STATS] Offside update for #{fid}: {oh}-{oa}")
             last_offsides[fid] = (oh, oa)
             messages.append(f"{header}\n\n🚩 Offsides: {oh}–{oa}\n──────────────────")
