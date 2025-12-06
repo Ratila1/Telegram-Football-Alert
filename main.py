@@ -51,6 +51,63 @@ def save_tracked(tracked: Set[int]):
 
 manual_tracked: Set[int] = load_tracked()
 
+async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Shows ALL matches currently being tracked by the bot (Top-5 + Manual)."""
+    message = update.effective_message
+    if not message:
+        return
+    
+    await message.reply_text("Fetching list of all currently tracked live matches, please wait...")
+
+    try:
+        # 1. Fetch all currently live fixtures
+        fixtures = get_live_fixtures()
+        
+        if not fixtures:
+            await message.reply_text("No live matches found at the moment.")
+            return
+
+        tracked_list = []
+        
+        # 2. Filter the fixtures using the same tracking logic as the main loop
+        for fixture in fixtures:
+            fid = fixture["fixture"]["id"]
+            
+            is_top5 = is_top5_league(fixture)
+            is_manual = fid in manual_tracked
+            
+            if is_top5 or is_manual:
+                league = fixture["league"]["name"]
+                home = fixture["teams"]["home"]["name"]
+                away = fixture["teams"]["away"]["name"]
+                gh = fixture["goals"]["home"] or 0
+                ga = fixture["goals"]["away"] or 0
+                
+                track_type = []
+                if is_top5:
+                    track_type.append("Auto (Top)")
+                if is_manual:
+                    track_type.append("Manual")
+                
+                tracked_list.append(
+                    f"• <code>#{fid}</code> | {home} {gh}-{ga} {away} "
+                    f"({league}) [Tracked by: {', '.join(track_type)}]"
+                )
+
+        if not tracked_list:
+            await message.reply_text("No tracked matches are currently live.")
+            return
+
+        text = "<b>ALL Currently Tracked Live Matches:</b>\n\n"
+        text += "\n".join(tracked_list)
+        text += "\n\n/track &lt;id&gt; — to add a match\n/untrack &lt;id&gt; — to stop"
+        
+        await message.reply_html(text)
+
+    except Exception as e:
+        print(f"[ALLGAMES ERROR] {e}")
+        await message.reply_text("An error occurred while fetching live matches.")
+
 # ====================== TELEGRAM COMMANDS ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_message:
@@ -198,6 +255,7 @@ async def main():
     app.add_handler(CommandHandler("track", track))
     app.add_handler(CommandHandler("untrack", untrack))
     app.add_handler(CommandHandler("mygames", mygames))
+    app.add_handler(CommandHandler("allgames", allgames))
 
     await app.initialize()
     await app.start()
