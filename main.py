@@ -3,13 +3,14 @@
 import asyncio
 import json
 import os
-from typing import Set
+from typing import Set, List # Добавлен List
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from api_football import get_live_fixtures, is_top5_league, parse_events
-from config import TOKEN, CHAT_ID, CHECK_INTERVAL
+# CHAT_ID УБРАН, так как теперь используется список подписок
+from config import TOKEN, CHECK_INTERVAL 
 
 # ====================== TRACKED MATCHES STORAGE (Улучшено) ======================
 TRACKED_FILE = "tracked.json"
@@ -50,6 +51,43 @@ def save_tracked(tracked: Set[int]):
             os.remove(temp_file)
 
 manual_tracked: Set[int] = load_tracked()
+
+# ====================== SUBSCRIBED CHATS STORAGE (НОВЫЙ БЛОК) ======================
+SUBSCRIBED_FILE = "subscribers.json"
+
+def load_subscribers() -> Set[int]:
+    """Loads CHAT IDs subscribed to receive alerts."""
+    if not os.path.exists(SUBSCRIBED_FILE):
+        return set()
+    
+    try:
+        with open(SUBSCRIBED_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                # Фильтруем и преобразуем в int
+                return set(int(item) for item in data if str(item).lstrip('-').isdigit())
+            else:
+                print(f"[LOAD ERROR] Invalid file structure in {SUBSCRIBED_FILE}. Resetting subscribers.")
+                return set()
+    except Exception as e:
+        print(f"[LOAD ERROR] Could not load subscriber data: {e}. Resetting subscriptions.")
+        return set()
+
+def save_subscribers(subscribed: Set[int]):
+    """Saves subscribed CHAT IDs to file."""
+    temp_file = SUBSCRIBED_FILE + ".tmp"
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(list(subscribed), f, ensure_ascii=False, indent=2)
+        os.replace(temp_file, SUBSCRIBED_FILE)
+        print(f"[STORAGE] Subscribed chats saved successfully. Total: {len(subscribed)}")
+    except Exception as e:
+        print(f"[SAVE ERROR] Could not save subscribed data: {e}")
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+
+subscribed_chats: Set[int] = load_subscribers()
+# ====================== КОНЕЦ НОВОГО БЛОКА ======================
 
 async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Shows ALL matches currently being tracked by the bot (Top-5 + Manual)."""
@@ -110,10 +148,25 @@ async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ====================== TELEGRAM COMMANDS ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.effective_message:
+    if not update.effective_message or not update.effective_chat:
         return
+    
+    chat_id_to_add = update.effective_chat.id
+    
+    # 1. Добавляем CHAT ID в список подписок
+    if chat_id_to_add not in subscribed_chats:
+        subscribed_chats.add(chat_id_to_add)
+        save_subscribers(subscribed_chats)
+        print(f"[SUBSCRIBE] New subscription: {chat_id_to_add}")
+        message_text = "✅ **Подписка оформлена!** Вы будете получать уведомления в этом чате.\n\n"
+    else:
+        message_text = "✅ **Вы уже подписаны.** Уведомления приходят в этот чат.\n\n"
+        
+    
+    # 2. Отправляем приветственное сообщение
     await update.effective_message.reply_text(
-        "<b>Live Football Tracker</b>\n\n"
+        f"<b>Live Football Tracker</b>\n\n"
+        f"{message_text}"
         "• Top-5 leagues are tracked automatically\n"
         "• Use /track &lt;fixture_id&gt; to follow any other match\n\n"
         "Commands:\n"
@@ -169,38 +222,61 @@ async def mygames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text += "\n/untrack &lt;id&gt; — to stop"
     await message.reply_html(text)
 
-# ====================== ALERT SENDER ======================
+# ====================== ALERT SENDER (ИЗМЕНЕНО) ======================
 async def send_alert(text: str, app: Application):
-    try:
-        await app.bot.send_message(
-            chat_id=CHAT_ID,
-            text=text.strip(),
-            parse_mode="HTML",
-            disable_web_page_preview=True
-        )
-        print(f"[ALERT] Successfully sent message to chat {CHAT_ID}")
-    except Exception as e:
-        print(f"[SEND ERROR] Failed to send message to chat {CHAT_ID}: {e}")
+    if not subscribed_chats:
+        print("[ALERT] No active subscriptions. Skipping alert.")
+        return
+        
+    alert_text = text.strip()
+    
+    # Создаем список ID, которые нужно удалить (чтобы не менять Set во время итерации)
+    chats_to_remove = set() 
+    
+    for chat_id in subscribed_chats:
+        try:
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text=alert_text,
+                parse_mode="HTML",
+                disable_web_page_preview=True
+            )
+            print(f"[ALERT] Successfully sent message to chat {chat_id}")
+            
+        except Exception as e:
+            error_str = str(e)
+            # Ошибка Forbidden: bot was blocked by the user или chat not found
+            if "Forbidden" in error_str or "chat not found" in error_str: 
+                print(f"[SEND ERROR] Bot blocked/kicked or chat not found in {chat_id}. Marking for unsubscribing.")
+                chats_to_remove.add(chat_id)
+            else:
+                print(f"[SEND ERROR] Failed to send message to chat {chat_id}: {e}")
+                
+    # Удаляем неактивные чаты после итерации и сохраняем
+    if chats_to_remove:
+        subscribed_chats.difference_update(chats_to_remove)
+        save_subscribers(subscribed_chats)
 
-# ====================== MAIN LOOP (Улучшено логирование) ======================
+
+# ====================== MAIN LOOP (Использует новую логику) ======================
 async def main_loop(app: Application):
     print("\n[BOT] Starting main tracking loop...")
     print(f"[BOT] Initial state: {len(manual_tracked)} manually tracked matches.")
     # Добавлено логирование текущего интервала для удобства
     print(f"[BOT] Check interval set to {CHECK_INTERVAL} seconds.") 
+    print(f"[BOT] Active subscriptions: {len(subscribed_chats)} chats.")
     
     cycle_count = 0
     
     while True:
         cycle_count += 1
-        print(f"\n--- Tracking Cycle #{cycle_count} ({len(manual_tracked)} manually tracked) ---")
+        print(f"\n--- Tracking Cycle #{cycle_count} ({len(manual_tracked)} manual, {len(subscribed_chats)} subs) ---")
         
         try:
             fixtures = get_live_fixtures()
             
             if not fixtures:
                 print("[LOOP] No live fixtures found. Waiting...")
-                # Заменено 20 на CHECK_INTERVAL
                 await asyncio.sleep(CHECK_INTERVAL) 
                 continue
 
@@ -236,14 +312,13 @@ async def main_loop(app: Application):
                     print(f"[TRACK] Found {len(messages)} new alert(s) for #{fid}")
                 
                 for msg in messages:
-                    await send_alert(msg, app)
+                    await send_alert(msg, app) # ИСПОЛЬЗУЕМ НОВУЮ send_alert
 
             print(f"[LOOP] Analysis complete. {matches_to_analyze} matches processed.")
             
         except Exception as e:
             print(f"[LOOP ERROR] An unexpected error occurred in the main loop: {e}")
             
-        # Заменено 20 на CHECK_INTERVAL
         await asyncio.sleep(CHECK_INTERVAL)
 
 # ====================== BOT STARTUP ======================

@@ -5,6 +5,7 @@ import hashlib
 from typing import List, Dict, Any
 
 # Assuming config.py is available
+# Импортируем только API_KEY и LEAGUE_IDS, так как CHAT_ID не используется
 from config import API_KEY, LEAGUE_IDS
 
 HEADERS = {
@@ -38,9 +39,9 @@ def get_live_fixtures() -> list[dict]:
         if r.status_code != 200:
             print(f"[API ERROR] HTTP Status {r.status_code}. Response text (partial): {r.text[:100].strip()}...")
             if r.status_code == 403:
-                print("      - Check API Key, daily quota, or rate limits.")
+                print("      - Check API Key, daily quota, or rate limits.")
             if r.status_code == 451:
-                print("      - Live data may require a PRO plan.")
+                print("      - Live data may require a PRO plan.")
             r.raise_for_status()
 
         data = r.json()
@@ -185,7 +186,11 @@ def parse_events(fixture: dict) -> list[str]:
         def get_value(stat_list: list, name: str) -> int:
             for s in stat_list:
                 if s["type"] == name:
-                    return int(s["value"].strip().replace('%', '') or 0)
+                    # Убедимся, что value — строка, прежде чем вызывать strip/replace
+                    value = s["value"]
+                    if value is None:
+                        return 0
+                    return int(str(value).strip().replace('%', '') or 0)
             return 0
 
         ch = get_value(stats[0]["statistics"], "Corner Kicks")
