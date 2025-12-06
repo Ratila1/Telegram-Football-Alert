@@ -158,9 +158,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         subscribed_chats.add(chat_id_to_add)
         save_subscribers(subscribed_chats)
         print(f"[SUBSCRIBE] New subscription: {chat_id_to_add}")
-        message_text = "✅ **Подписка оформлена!** Вы будете получать уведомления в этом чате.\n\n"
+        
+        # ✅ НОВОЕ СООБЩЕНИЕ НА АНГЛИЙСКОМ
+        message_text = "✅ *Subscription confirmed!* You will receive notifications in this chat.\n\n"
     else:
-        message_text = "✅ **Вы уже подписаны.** Уведомления приходят в этот чат.\n\n"
+        # ✅ СООБЩЕНИЕ, ЕСЛИ УЖЕ ПОДПИСАН
+        message_text = "✅ *You are already subscribed.* Notifications arrive in this chat.\n\n"
         
     
     # 2. Отправляем приветственное сообщение
