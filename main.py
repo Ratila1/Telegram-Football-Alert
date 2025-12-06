@@ -9,7 +9,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from api_football import get_live_fixtures, is_top5_league, parse_events
-from config import TOKEN, CHAT_ID
+from config import TOKEN, CHAT_ID, CHECK_INTERVAL
 
 # ====================== TRACKED MATCHES STORAGE (Улучшено) ======================
 TRACKED_FILE = "tracked.json"
@@ -186,6 +186,8 @@ async def send_alert(text: str, app: Application):
 async def main_loop(app: Application):
     print("\n[BOT] Starting main tracking loop...")
     print(f"[BOT] Initial state: {len(manual_tracked)} manually tracked matches.")
+    # Добавлено логирование текущего интервала для удобства
+    print(f"[BOT] Check interval set to {CHECK_INTERVAL} seconds.") 
     
     cycle_count = 0
     
@@ -198,7 +200,8 @@ async def main_loop(app: Application):
             
             if not fixtures:
                 print("[LOOP] No live fixtures found. Waiting...")
-                await asyncio.sleep(20)
+                # Заменено 20 на CHECK_INTERVAL
+                await asyncio.sleep(CHECK_INTERVAL) 
                 continue
 
             matches_to_analyze = 0
@@ -240,7 +243,8 @@ async def main_loop(app: Application):
         except Exception as e:
             print(f"[LOOP ERROR] An unexpected error occurred in the main loop: {e}")
             
-        await asyncio.sleep(20)
+        # Заменено 20 на CHECK_INTERVAL
+        await asyncio.sleep(CHECK_INTERVAL)
 
 # ====================== BOT STARTUP ======================
 async def main():
