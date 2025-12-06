@@ -82,6 +82,39 @@ def save_subscribers(subscribed: Set[int]):
 subscribed_chats: Set[int] = load_subscribers()
 # ====================== КОНЕЦ БЛОКА ======================
 
+# ====================== UNTRACKED EXCEPTIONS STORAGE (НОВЫЙ БЛОК) ======================
+EXCEPTIONS_FILE = "untracked_exceptions.json"
+
+def load_untracked_exceptions() -> Set[int]:
+    """Loads fixture IDs that should be ignored, even if they are Top-5."""
+    if not os.path.exists(EXCEPTIONS_FILE):
+        return set()
+    try:
+        with open(EXCEPTIONS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # Убеждаемся, что каждый элемент - целое число
+            return set(int(item) for item in data if str(item).lstrip('-').isdigit())
+    except Exception as e:
+        print(f"[EXCEPTIONS ERROR] Failed to load untracked exceptions: {e}. Resetting.")
+        return set()
+
+def save_untracked_exceptions(exceptions: Set[int]):
+    """Saves fixture IDs that should be ignored."""
+    temp_file = EXCEPTIONS_FILE + ".tmp"
+    try:
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump(list(exceptions), f, ensure_ascii=False, indent=2)
+        os.replace(temp_file, EXCEPTIONS_FILE)
+        print(f"[STORAGE] Untracked exceptions saved successfully.")
+    except Exception as e:
+        print(f"[EXCEPTIONS ERROR] Failed to save untracked exceptions: {e}")
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+
+untracked_exceptions: Set[int] = load_untracked_exceptions()
+# ====================== КОНЕЦ НОВОГО БЛОКА ======================
+
+
 async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Shows ALL matches currently being tracked by the bot (Top-5 + Manual)."""
     message = update.effective_message
@@ -91,7 +124,6 @@ async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text("Fetching list of all currently tracked live matches, please wait...")
 
     try:
-        # ИЗМЕНЕНИЕ: Убран аргумент manual_tracked
         fixtures = get_live_fixtures() 
         
         if not fixtures:
@@ -100,14 +132,17 @@ async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         tracked_list = []
         
-        # Фильтрация остается в коде бота
         for fixture in fixtures:
             fid = fixture["fixture"]["id"]
             
             is_top5 = is_top5_league(fixture)
             is_manual = fid in manual_tracked
+            is_excluded = fid in untracked_exceptions # НОВАЯ ПРОВЕРКА
             
-            if is_top5 or is_manual:
+            # Показываем только те, которые активны или отслеживаются вручную (и не исключены)
+            is_currently_tracked = (is_top5 or is_manual) and not is_excluded
+            
+            if is_top5 or is_manual: # Показываем все, что потенциально отслеживается
                 league = fixture["league"]["name"]
                 home = fixture["teams"]["home"]["name"]
                 away = fixture["teams"]["away"]["name"]
@@ -120,9 +155,13 @@ async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 if is_manual:
                     track_type.append("Manual")
                 
+                status_info = f" [Tracked by: {', '.join(track_type)}]"
+                if is_excluded:
+                    status_info += " ⚠️ **PAUSED**" # Добавляем статус паузы
+                
                 tracked_list.append(
                     f"• <code>#{fid}</code> | {home} {gh}-{ga} {away} "
-                    f"({league}) [Tracked by: {', '.join(track_type)}]"
+                    f"({league}){status_info}"
                 )
 
         if not tracked_list:
@@ -139,7 +178,7 @@ async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         print(f"[ALLGAMES ERROR] {e}")
         await message.reply_text("An error occurred while fetching live matches. Check bot logs.")
 
-# ... (start, track, untrack, mygames, send_alert - код без изменений)
+# ... (start function без изменений)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_message or not update.effective_chat:
@@ -171,6 +210,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         parse_mode="HTML"
     )
 
+# ====================== ОБНОВЛЕННЫЕ КОМАНДЫ ======================
+
 async def track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if not message or not context.args:
@@ -179,9 +220,17 @@ async def track(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     try:
         fid = int(context.args[0])
+        
+        # 1. Добавляем в ручное отслеживание
         manual_tracked.add(fid)
         save_tracked(manual_tracked)
-        await message.reply_text(f"Now tracking match <code>#{fid}</code>", parse_mode="HTML")
+        
+        # 2. УДАЛЯЕМ из списка исключений (если пользователь его ранее исключил)
+        if fid in untracked_exceptions:
+            untracked_exceptions.remove(fid)
+            save_untracked_exceptions(untracked_exceptions)
+            
+        await message.reply_text(f"Now tracking match <code>#{fid}</code> (Notifications unpaused)", parse_mode="HTML")
     except ValueError:
         await message.reply_text("Fixture ID must be a number!")
 
@@ -193,28 +242,61 @@ async def untrack(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     try:
         fid = int(context.args[0])
+        
+        status_message = []
+        
+        # 1. Пытаемся удалить из ручного отслеживания (если был там)
         if fid in manual_tracked:
             manual_tracked.remove(fid)
             save_tracked(manual_tracked)
-            await message.reply_text(f"Stopped tracking <code>#{fid}</code>", parse_mode="HTML")
+            status_message.append(f"Stopped manual tracking for <code>#{fid}</code>.")
+        
+        # 2. Добавляем в список исключений, чтобы остановить уведомления для Top-5 матчей
+        if fid not in untracked_exceptions:
+            untracked_exceptions.add(fid)
+            save_untracked_exceptions(untracked_exceptions)
+            status_message.append(f"Notifications for <code>#{fid}</code> have been **paused** (Exception added).")
         else:
-            await message.reply_text(f"Match <code>#{fid}</code> was not tracked", parse_mode="HTML")
+            status_message.append(f"Notifications for <code>#{fid}</code> were already paused.")
+             
+        
+        if not status_message:
+             await message.reply_text(f"Match <code>#{fid}</code> was neither manually tracked nor in exceptions.", parse_mode="HTML")
+             return
+             
+        await message.reply_html("\n".join(status_message))
+        
     except ValueError:
         await message.reply_text("Invalid ID")
+
+# ... (mygames function без изменений)
 
 async def mygames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     if not message:
         return
 
-    if not manual_tracked:
-        await message.reply_text("You have no manually tracked matches.\n\nTop-5 leagues are always active.")
+    if not manual_tracked and not untracked_exceptions:
+        await message.reply_text("You have no manually tracked matches or paused matches.\n\nTop-5 leagues are always active.")
         return
 
-    text = "<b>Your tracked matches:</b>\n\n"
-    for fid in sorted(manual_tracked):
-        text += f"• <code>#{fid}</code>\n"
-    text += "\n/untrack &lt;id&gt; — to stop"
+    text = "<b>Your tracking status:</b>\n\n"
+    
+    # 1. Вручную отслеживаемые матчи
+    if manual_tracked:
+        text += "<u>Manually Tracked Matches (Active):</u>\n"
+        for fid in sorted(manual_tracked):
+            text += f"• <code>#{fid}</code>\n"
+        text += "\n"
+        
+    # 2. Исключенные/приостановленные матчи
+    if untracked_exceptions:
+        text += "<u>Paused Notifications (Exceptions):</u>\n"
+        for fid in sorted(untracked_exceptions):
+            text += f"• <code>#{fid}</code> (To resume, use /track {fid})\n"
+        text += "\n"
+        
+    text += "\n/untrack &lt;id&gt; — to stop/pause"
     await message.reply_html(text)
 
 
@@ -250,10 +332,11 @@ async def send_alert(text: str, app: Application):
         save_subscribers(subscribed_chats)
 
 
-# ====================== MAIN LOOP (ИЗМЕНЕНО: Убран аргумент) ======================
+# ====================== MAIN LOOP (ОБНОВЛЕННАЯ ЛОГИКА) ======================
 async def main_loop(app: Application):
     print("\n[BOT] Starting main tracking loop...")
     print(f"[BOT] Initial state: {len(manual_tracked)} manually tracked matches.")
+    print(f"[BOT] Initial exceptions: {len(untracked_exceptions)}.") # Добавлено логирование исключений
     print(f"[BOT] Check interval set to {CHECK_INTERVAL} seconds.") 
     print(f"[BOT] Active subscriptions: {len(subscribed_chats)} chats.")
     
@@ -264,7 +347,6 @@ async def main_loop(app: Application):
         print(f"\n--- Tracking Cycle #{cycle_count} ({len(manual_tracked)} manual, {len(subscribed_chats)} subs) ---")
         
         try:
-            # ИЗМЕНЕНИЕ: Убран аргумент manual_tracked
             fixtures = get_live_fixtures() 
             
             if not fixtures:
@@ -278,15 +360,22 @@ async def main_loop(app: Application):
                 fid = fixture["fixture"]["id"]
                 is_top5 = is_top5_league(fixture)
                 is_manual = fid in manual_tracked
+                is_excluded = fid in untracked_exceptions # НОВАЯ ПРОВЕРКА
                 
-                is_tracked_match = is_top5 or is_manual 
+                # Матч отслеживается, только если он Top-5 ИЛИ ручной, И НЕ находится в исключениях
+                is_tracked_match = (is_top5 or is_manual) and not is_excluded
                 
                 home = fixture["teams"]["home"]["name"]
                 away = fixture["teams"]["away"]["name"]
                 
-                # Фильтрация теперь происходит здесь (в коде бота)
                 if not is_tracked_match:
-                    print(f"[SKIP] Fixture #{fid} ({home} vs {away}) - Not tracked.")
+                    reason = []
+                    if is_excluded:
+                        reason.append("Excluded")
+                    if not is_top5 and not is_manual:
+                        reason.append("Not Tracked")
+                        
+                    print(f"[SKIP] Fixture #{fid} ({home} vs {away}) - Reason: {', '.join(reason)}")
                     continue
                 
                 matches_to_analyze += 1
@@ -300,7 +389,6 @@ async def main_loop(app: Application):
                     
                 print(f"[TRACK] Analyzing Fixture #{fid} ({home} vs {away}) - Reason: {track_type}")
 
-                # Аргумент is_tracked_match для статистики оставлен
                 messages = parse_events(fixture, is_tracked_match) 
                 
                 if messages:
