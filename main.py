@@ -8,13 +8,12 @@ from typing import Set, List
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# NOTE: parse_events теперь принимает 2 аргумента: parse_events(fixture, is_tracked_match)
 from api_football import get_live_fixtures, is_top5_league, parse_events
 from config import TOKEN, CHECK_INTERVAL 
 
-# ====================== TRACKED MATCHES STORAGE (Улучшено) ======================
+# ====================== TRACKED MATCHES STORAGE ======================
 TRACKED_FILE = "tracked.json"
-
+# ... (load_tracked, save_tracked functions) ...
 def load_tracked() -> Set[int]:
     """Loads manually tracked fixture IDs from file."""
     if not os.path.exists(TRACKED_FILE):
@@ -24,7 +23,6 @@ def load_tracked() -> Set[int]:
         with open(TRACKED_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, dict) and "manual" in data:
-                # Ensure all elements are integers
                 return set(int(item) for item in data.get("manual", []) if str(item).isdigit())
             else:
                 print(f"[LOAD ERROR] Invalid file structure in {TRACKED_FILE}. Resetting tracking.")
@@ -37,24 +35,20 @@ def save_tracked(tracked: Set[int]):
     """Saves manually tracked fixture IDs to file using atomic replacement."""
     temp_file = TRACKED_FILE + ".tmp"
     try:
-        # 1. Write to a temporary file
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump({"manual": list(tracked)}, f, ensure_ascii=False, indent=2)
-        
-        # 2. Atomically replace the old file with the new one
         os.replace(temp_file, TRACKED_FILE)
         print(f"[STORAGE] Tracked matches saved successfully.")
     except Exception as e:
         print(f"[SAVE ERROR] Could not save tracked data: {e}")
-        # Clean up temporary file if save failed
         if os.path.exists(temp_file):
             os.remove(temp_file)
 
 manual_tracked: Set[int] = load_tracked()
 
-# ====================== SUBSCRIBED CHATS STORAGE (НОВЫЙ БЛОК) ======================
+# ====================== SUBSCRIBED CHATS STORAGE ======================
 SUBSCRIBED_FILE = "subscribers.json"
-
+# ... (load_subscribers, save_subscribers functions) ...
 def load_subscribers() -> Set[int]:
     """Loads CHAT IDs subscribed to receive alerts."""
     if not os.path.exists(SUBSCRIBED_FILE):
@@ -64,7 +58,6 @@ def load_subscribers() -> Set[int]:
         with open(SUBSCRIBED_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, list):
-                # Фильтруем и преобразуем в int
                 return set(int(item) for item in data if str(item).lstrip('-').isdigit())
             else:
                 print(f"[LOAD ERROR] Invalid file structure in {SUBSCRIBED_FILE}. Resetting subscribers.")
@@ -87,7 +80,7 @@ def save_subscribers(subscribed: Set[int]):
             os.remove(temp_file)
 
 subscribed_chats: Set[int] = load_subscribers()
-# ====================== КОНЕЦ НОВОГО БЛОКА ======================
+# ====================== КОНЕЦ БЛОКА ======================
 
 async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Shows ALL matches currently being tracked by the bot (Top-5 + Manual)."""
@@ -98,8 +91,8 @@ async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await message.reply_text("Fetching list of all currently tracked live matches, please wait...")
 
     try:
-        # 1. Fetch all currently live fixtures - ИСПРАВЛЕНО: передаем manual_tracked
-        fixtures = get_live_fixtures(manual_tracked) 
+        # ИЗМЕНЕНИЕ: Убран аргумент manual_tracked
+        fixtures = get_live_fixtures() 
         
         if not fixtures:
             await message.reply_text("No live matches found at the moment.")
@@ -107,7 +100,7 @@ async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         tracked_list = []
         
-        # 2. Filter the fixtures using the same tracking logic as the main loop
+        # Фильтрация остается в коде бота
         for fixture in fixtures:
             fid = fixture["fixture"]["id"]
             
@@ -144,11 +137,9 @@ async def allgames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     except Exception as e:
         print(f"[ALLGAMES ERROR] {e}")
-        # Если get_live_fixtures падает из-за лимита API, это будет видно здесь
         await message.reply_text("An error occurred while fetching live matches. Check bot logs.")
 
-# ====================== TELEGRAM COMMANDS ======================
-# ... (start, track, untrack, mygames - код без изменений)
+# ... (start, track, untrack, mygames, send_alert - код без изменений)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_message or not update.effective_chat:
@@ -162,10 +153,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         save_subscribers(subscribed_chats)
         print(f"[SUBSCRIBE] New subscription: {chat_id_to_add}")
         
-        # ✅ НОВОЕ СООБЩЕНИЕ НА АНГЛИЙСКОМ
         message_text = "✅ *Subscription confirmed!* You will receive notifications in this chat.\n\n"
     else:
-        # ✅ СООБЩЕНИЕ, ЕСЛИ УЖЕ ПОДПИСАН
         message_text = "✅ *You are already subscribed.* Notifications arrive in this chat.\n\n"
         
     
@@ -228,7 +217,7 @@ async def mygames(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     text += "\n/untrack &lt;id&gt; — to stop"
     await message.reply_html(text)
 
-# ====================== ALERT SENDER (ИЗМЕНЕНО) ======================
+
 async def send_alert(text: str, app: Application):
     if not subscribed_chats:
         print("[ALERT] No active subscriptions. Skipping alert.")
@@ -236,7 +225,6 @@ async def send_alert(text: str, app: Application):
         
     alert_text = text.strip()
     
-    # Создаем список ID, которые нужно удалить (чтобы не менять Set во время итерации)
     chats_to_remove = set() 
     
     for chat_id in subscribed_chats:
@@ -251,20 +239,18 @@ async def send_alert(text: str, app: Application):
             
         except Exception as e:
             error_str = str(e)
-            # Ошибка Forbidden: bot was blocked by the user или chat not found
             if "Forbidden" in error_str or "chat not found" in error_str: 
                 print(f"[SEND ERROR] Bot blocked/kicked or chat not found in {chat_id}. Marking for unsubscribing.")
                 chats_to_remove.add(chat_id)
             else:
                 print(f"[SEND ERROR] Failed to send message to chat {chat_id}: {e}")
                 
-    # Удаляем неактивные чаты после итерации и сохраняем
     if chats_to_remove:
         subscribed_chats.difference_update(chats_to_remove)
         save_subscribers(subscribed_chats)
 
 
-# ====================== MAIN LOOP (ИСПРАВЛЕНО: Передаем аргументы) ======================
+# ====================== MAIN LOOP (ИЗМЕНЕНО: Убран аргумент) ======================
 async def main_loop(app: Application):
     print("\n[BOT] Starting main tracking loop...")
     print(f"[BOT] Initial state: {len(manual_tracked)} manually tracked matches.")
@@ -278,8 +264,8 @@ async def main_loop(app: Application):
         print(f"\n--- Tracking Cycle #{cycle_count} ({len(manual_tracked)} manual, {len(subscribed_chats)} subs) ---")
         
         try:
-            # ИСПРАВЛЕНИЕ #1: Передаем обязательный аргумент manual_tracked
-            fixtures = get_live_fixtures(manual_tracked) 
+            # ИЗМЕНЕНИЕ: Убран аргумент manual_tracked
+            fixtures = get_live_fixtures() 
             
             if not fixtures:
                 print("[LOOP] No live fixtures found. Waiting...")
@@ -293,14 +279,14 @@ async def main_loop(app: Application):
                 is_top5 = is_top5_league(fixture)
                 is_manual = fid in manual_tracked
                 
-                # Флаг для parse_events и логики статистики
                 is_tracked_match = is_top5 or is_manual 
                 
                 home = fixture["teams"]["home"]["name"]
                 away = fixture["teams"]["away"]["name"]
                 
+                # Фильтрация теперь происходит здесь (в коде бота)
                 if not is_tracked_match:
-                    print(f"[SKIP] Fixture #{fid} ({home} vs {away}) - Not in auto-track list and not manually tracked.")
+                    print(f"[SKIP] Fixture #{fid} ({home} vs {away}) - Not tracked.")
                     continue
                 
                 matches_to_analyze += 1
@@ -314,7 +300,7 @@ async def main_loop(app: Application):
                     
                 print(f"[TRACK] Analyzing Fixture #{fid} ({home} vs {away}) - Reason: {track_type}")
 
-                # ИСПРАВЛЕНИЕ #2: Передаем обязательный аргумент is_tracked_match
+                # Аргумент is_tracked_match для статистики оставлен
                 messages = parse_events(fixture, is_tracked_match) 
                 
                 if messages:
@@ -326,14 +312,12 @@ async def main_loop(app: Application):
             print(f"[LOOP] Analysis complete. {matches_to_analyze} matches processed.")
             
         except Exception as e:
-            # Эта ошибка должна исчезнуть после исправлений выше
             print(f"[LOOP ERROR] An unexpected error occurred in the main loop: {e}")
             
         await asyncio.sleep(CHECK_INTERVAL)
 
 # ====================== BOT STARTUP ======================
 async def main():
-    # Make sure TOKEN is defined in config.py
     if not TOKEN or TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
         print("ERROR: Please set your Telegram TOKEN in config.py")
         return
@@ -355,7 +339,6 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        # Предполагается, что keep_alive используется для хостинга
         import keep_alive
         keep_alive.keep_alive()
     except ImportError:

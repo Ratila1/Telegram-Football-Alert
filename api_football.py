@@ -1,3 +1,5 @@
+# api_football.py
+
 import requests
 import hashlib
 import json
@@ -63,7 +65,6 @@ def get_fixture_statistics(fid: int) -> list[dict] | None:
             print(f"[API STATS] No statistics data found for #{fid}.")
             return None
             
-        # API возвращает список, содержащий два словаря (home stats и away stats)
         return response_data
         
     except Exception as e:
@@ -72,20 +73,13 @@ def get_fixture_statistics(fid: int) -> list[dict] | None:
 # ==============================================================================
 
 
-def get_live_fixtures(manual_tracked_ids: Set[int]) -> list[dict]:
-    """
-    Fetch LIVE fixtures, filtered by LEAGUE_IDS. 
-    Оптимизировано: не тянем лишние матчи.
-    """
+# ИЗМЕНЕНИЕ: Убран аргумент manual_tracked_ids и убрана фильтрация по league
+def get_live_fixtures() -> list[dict]:
+    """Fetch all LIVE fixtures without filtering by league ID (тянем все live-матчи)."""
     url = "https://v3.football.api-sports.io/fixtures"
-    
-    # Запрос Live-матчей только по нашим ID лиг
-    league_list = list(LEAGUE_IDS) 
-    
-    # Параметры запроса: только live, только наши лиги
-    params = {"live": "all", "league": league_list} 
+    params = {"live": "all"} # Запрос всех live-матчей
 
-    print(f"\n[API] Fetching LIVE fixtures (Leagues: {league_list})")
+    print(f"\n[API] Fetching ALL LIVE fixtures.")
 
     try:
         r = requests.get(
@@ -100,11 +94,7 @@ def get_live_fixtures(manual_tracked_ids: Set[int]) -> list[dict]:
         data = r.json()
         fixtures = data.get("response", [])
         
-        # NOTE: Если API-Sports не возвращает матчи, отслеживаемые вручную (manual_tracked_ids)
-        # в live-ответе по лигам, их придется запрашивать отдельным запросом (дополнительный запрос),
-        # но для минимизации запросов мы пока полагаемся на фильтр по лигам.
-        
-        print(f"[API] Received {len(fixtures)} live fixtures (Filtered by Leagues).")
+        print(f"[API] Received {len(fixtures)} live fixtures (UNFILTERED).")
         
         return fixtures
 
@@ -124,7 +114,7 @@ def is_top5_league(fixture: dict) -> bool:
 def parse_events(fixture: dict, is_tracked_match: bool) -> list[str]:
     """
     Parse match events and statistics, return formatted messages.
-    Использует is_tracked_match для условного запроса статистики.
+    Аргумент is_tracked_match сохранен, так как он нужен для условного запроса статистики.
     """
     messages: list[str] = []
     fid = fixture["fixture"]["id"]
