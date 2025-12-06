@@ -1,3 +1,5 @@
+# main.py
+
 import asyncio
 import json
 import os
@@ -9,26 +11,47 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from api_football import get_live_fixtures, is_top5_league, parse_events
 from config import TOKEN, CHAT_ID
 
-# ====================== TRACKED MATCHES STORAGE ======================
+# ====================== TRACKED MATCHES STORAGE (Улучшено) ======================
 TRACKED_FILE = "tracked.json"
 
 def load_tracked() -> Set[int]:
-    if os.path.exists(TRACKED_FILE):
-        try:
-            with open(TRACKED_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return set(data.get("manual", []))
-        except Exception:
-            return set()
-    return set()
+    """Loads manually tracked fixture IDs from file."""
+    if not os.path.exists(TRACKED_FILE):
+        return set()
+    
+    try:
+        with open(TRACKED_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict) and "manual" in data:
+                # Ensure all elements are integers
+                return set(int(item) for item in data.get("manual", []) if str(item).isdigit())
+            else:
+                print(f"[LOAD ERROR] Invalid file structure in {TRACKED_FILE}. Resetting tracking.")
+                return set()
+    except Exception as e:
+        print(f"[LOAD ERROR] Could not load tracked data from {TRACKED_FILE}: {e}. Resetting tracking.")
+        return set()
 
 def save_tracked(tracked: Set[int]):
-    with open(TRACKED_FILE, "w", encoding="utf-8") as f:
-        json.dump({"manual": list(tracked)}, f, ensure_ascii=False, indent=2)
+    """Saves manually tracked fixture IDs to file using atomic replacement."""
+    temp_file = TRACKED_FILE + ".tmp"
+    try:
+        # 1. Write to a temporary file
+        with open(temp_file, "w", encoding="utf-8") as f:
+            json.dump({"manual": list(tracked)}, f, ensure_ascii=False, indent=2)
+        
+        # 2. Atomically replace the old file with the new one
+        os.replace(temp_file, TRACKED_FILE)
+        print(f"[STORAGE] Tracked matches saved successfully.")
+    except Exception as e:
+        print(f"[SAVE ERROR] Could not save tracked data: {e}")
+        # Clean up temporary file if save failed
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
 
 manual_tracked: Set[int] = load_tracked()
 
-# ====================== TELEGRAM COMMANDS (100% без Pylance warning) ======================
+# ====================== TELEGRAM COMMANDS ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_message:
         return
@@ -98,34 +121,77 @@ async def send_alert(text: str, app: Application):
             parse_mode="HTML",
             disable_web_page_preview=True
         )
+        print(f"[ALERT] Successfully sent message to chat {CHAT_ID}")
     except Exception as e:
-        print(f"[SEND ERROR] {e}")
+        print(f"[SEND ERROR] Failed to send message to chat {CHAT_ID}: {e}")
 
-# ====================== MAIN LOOP ======================
+# ====================== MAIN LOOP (Улучшено логирование) ======================
 async def main_loop(app: Application):
-    print("Bot started — Top-5 + manual tracking active")
+    print("\n[BOT] Starting main tracking loop...")
+    print(f"[BOT] Initial state: {len(manual_tracked)} manually tracked matches.")
+    
+    cycle_count = 0
+    
     while True:
+        cycle_count += 1
+        print(f"\n--- Tracking Cycle #{cycle_count} ({len(manual_tracked)} manually tracked) ---")
+        
         try:
             fixtures = get_live_fixtures()
+            
             if not fixtures:
+                print("[LOOP] No live fixtures found. Waiting...")
                 await asyncio.sleep(20)
                 continue
 
+            matches_to_analyze = 0
+
             for fixture in fixtures:
                 fid = fixture["fixture"]["id"]
-                if not (is_top5_league(fixture) or fid in manual_tracked):
+                is_top5 = is_top5_league(fixture)
+                is_manual = fid in manual_tracked
+                
+                home = fixture["teams"]["home"]["name"]
+                away = fixture["teams"]["away"]["name"]
+                
+                if not (is_top5 or is_manual):
+                    # Логирование пропущенного матча
+                    print(f"[SKIP] Fixture #{fid} ({home} vs {away}) - Not in auto-track list and not manually tracked.")
                     continue
+                
+                matches_to_analyze += 1
+                
+                if is_top5 and is_manual:
+                    track_type = "Top-5 & Manual"
+                elif is_top5:
+                    track_type = "Top-5"
+                else:
+                    track_type = "Manual"
+                    
+                print(f"[TRACK] Analyzing Fixture #{fid} ({home} vs {away}) - Reason: {track_type}")
 
                 messages = parse_events(fixture)
+                
+                if messages:
+                    print(f"[TRACK] Found {len(messages)} new alert(s) for #{fid}")
+                
                 for msg in messages:
                     await send_alert(msg, app)
 
+            print(f"[LOOP] Analysis complete. {matches_to_analyze} matches processed.")
+            
         except Exception as e:
-            print(f"[LOOP ERROR] {e}")
+            print(f"[LOOP ERROR] An unexpected error occurred in the main loop: {e}")
+            
         await asyncio.sleep(20)
 
 # ====================== BOT STARTUP ======================
 async def main():
+    # Make sure TOKEN is defined in config.py
+    if not TOKEN or TOKEN == "YOUR_TELEGRAM_BOT_TOKEN_HERE":
+        print("ERROR: Please set your Telegram TOKEN in config.py")
+        return
+        
     app = Application.builder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -138,7 +204,7 @@ async def main():
     await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
 
     print("Polling started — bot is alive!")
-    await main_loop(app)  # Бесконечный цикл
+    await main_loop(app)
 
 if __name__ == "__main__":
     try:

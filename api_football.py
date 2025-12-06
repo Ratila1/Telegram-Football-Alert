@@ -1,8 +1,10 @@
-# api_football.py — Final Premium English Version
+# api_football.py
+
 import requests
 import hashlib
 from typing import List, Dict, Any
 
+# Assuming config.py is available
 from config import API_KEY, LEAGUE_IDS
 
 HEADERS = {
@@ -17,58 +19,47 @@ last_scores: dict[int, tuple[int, int]] = {}
 
 
 def get_live_fixtures() -> list[dict]:
-    """Fetch all LIVE fixtures with detailed logging."""
+    """Fetch all LIVE fixtures with detailed, non-verbose logging."""
     url = "https://v3.football.api-sports.io/fixtures"
+    params = {"live": "all"}
 
-    print("\n\n========== API REQUEST LOG ==========")
-    print("URL:", url)
-    print("Params:", {"live": "all"})
-    print("Headers:")
-    for k, v in HEADERS.items():
-        masked = v[:5] + "..." + v[-5:] if isinstance(v, str) else str(v)
-        print(f"  {k}: {masked}")
+    print(f"\n[API] Fetching LIVE fixtures (URL: {url}, Params: {params})")
 
     try:
         r = requests.get(
             url,
             headers=HEADERS,
-            params={"live": "all"},
+            params=params,
             timeout=15
         )
 
-        print("\n--- RAW RESPONSE ---")
-        print("Status Code:", r.status_code)
+        print(f"[API] Status: {r.status_code}")
 
-        try:
-            print("Response JSON:", r.json())
-        except Exception:
-            print("Response Text:", r.text)
+        if r.status_code != 200:
+            print(f"[API ERROR] HTTP Status {r.status_code}. Response text (partial): {r.text[:100].strip()}...")
+            if r.status_code == 403:
+                print("      - Check API Key, daily quota, or rate limits.")
+            if r.status_code == 451:
+                print("      - Live data may require a PRO plan.")
+            r.raise_for_status()
 
-        if r.status_code == 403:
-            print("\n--- 403 Forbidden ---")
-            print("Possible reasons:")
-            print("1) Invalid API key")
-            print("2) Daily limit reached")
-            print("3) Rate limit exceeded")
-
-        if r.status_code == 451:
-            print("\n--- 451 Blocked ---")
-            print("Live fixtures may require a PRO plan.")
-
-        r.raise_for_status()
-        return r.json().get("response", [])
+        data = r.json()
+        fixtures = data.get("response", [])
+        
+        print(f"[API] Received {len(fixtures)} live fixtures.")
+        
+        return fixtures
 
     except requests.exceptions.HTTPError as http_err:
-        print("\nHTTP ERROR:", http_err)
+        print(f"[API ERROR] HTTP Error occurred: {http_err}")
         return []
-
     except Exception as e:
-        print("\nUnexpected ERROR:", e)
+        print(f"[API ERROR] Unexpected error during request: {e}")
         return []
 
 
 def is_top5_league(fixture: dict) -> bool:
-    """Check if match belongs to tracked leagues."""
+    """Check if match belongs to tracked leagues defined in LEAGUE_IDS."""
     return fixture["league"]["id"] in LEAGUE_IDS
 
 
@@ -98,6 +89,8 @@ def parse_events(fixture: dict) -> list[str]:
 
     # Update score cache
     last_scores[fid] = (gh, ga)
+    
+    print(f"[PARSE] Analyzing Fixture #{fid}: {home} {gh}-{ga} {away} ({league})")
 
     # ===== EVENTS =====
     for ev in fixture.get("events", []):
@@ -108,10 +101,15 @@ def parse_events(fixture: dict) -> list[str]:
         if key in sent_events:
             continue
         sent_events.add(key)
+        
+        # Log the detected event
+        print(f"[EVENT] New event found for #{fid}: Type='{ev['type']}', Detail='{ev['detail']}', Min='{ev['time']['elapsed']}'")
 
         minute = ev["time"]["elapsed"]
         extra = ev["time"].get("extra")
         time_str = f"{minute}{'+' + str(extra) if extra else ''}'"
+
+        msg = ""
 
         if ev["type"] == "Goal":
             player = ev.get("player", {}).get("name", "Unknown Player")
@@ -138,10 +136,8 @@ def parse_events(fixture: dict) -> list[str]:
         elif ev["type"].lower() == "var":
             msg = f"🖥️ VAR Check — {ev['detail']}\n{time_str}"
 
-        else:
-            continue
-
-        messages.append(f"{header}\n\n{msg}\n──────────────────")
+        if msg:
+            messages.append(f"{header}\n\n{msg}\n──────────────────")
 
     # ===== STATISTICS =====
     stats = fixture.get("statistics")
@@ -150,7 +146,8 @@ def parse_events(fixture: dict) -> list[str]:
         def get_value(stat_list: list, name: str) -> int:
             for s in stat_list:
                 if s["type"] == name:
-                    return int(s["value"] or 0)
+                    # Replace None/"" with 0 and ensure integer type
+                    return int(s["value"].strip().replace('%', '') or 0)
             return 0
 
         ch = get_value(stats[0]["statistics"], "Corner Kicks")
@@ -160,10 +157,14 @@ def parse_events(fixture: dict) -> list[str]:
         oa = get_value(stats[1]["statistics"], "Offsides")
 
         if last_corners.get(fid) != (ch, ca):
+            # Log the change in statistics
+            print(f"[STATS] Corner update for #{fid}: {ch}-{ca}")
             last_corners[fid] = (ch, ca)
             messages.append(f"{header}\n\n📐 Corner Kicks: {ch}–{ca}\n──────────────────")
 
         if last_offsides.get(fid) != (oh, oa):
+            # Log the change in statistics
+            print(f"[STATS] Offside update for #{fid}: {oh}-{oa}")
             last_offsides[fid] = (oh, oa)
             messages.append(f"{header}\n\n🚩 Offsides: {oh}–{oa}\n──────────────────")
 
